@@ -1,0 +1,112 @@
+name: Construire l'APK Tamagauchiste
+
+# Se dÃ©clenche Ã  chaque push, et peut Ãªtre lancÃ© Ã  la main depuis l'onglet Actions.
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # nÃ©cessaire pour joindre l'APK Ã  une release sur un tag
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: RÃ©cupÃ©rer le dÃ©pÃ´t
+        uses: actions/checkout@v4
+
+      - name: Installer le JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Installer le SDK Android
+        uses: android-actions/setup-android@v3
+
+      - name: Accepter les licences et installer les paquets SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: DÃ©compresser le ZIP et localiser le projet Gradle
+        id: locate
+        run: |
+          shopt -s nullglob globstar
+          # 1) Recoller d'Ã©ventuels ZIP dÃ©coupÃ©s (<nom>.zip.00, .01, .02, ...)
+          for first in *.zip.00 **/*.zip.00; do
+            full="${first%.00}"
+            echo "Recollage de $full depuis ${full}.NN ..."
+            cat "${full}".[0-9][0-9] > "$full"
+          done
+          # 2) DÃ©compresser tout .zip prÃ©sent (recollÃ© ou non)
+          for z in *.zip **/*.zip; do
+            echo "DÃ©compression de : $z"
+            unzip -o -q "$z" -d "_src_$(basename "$z" .zip)"
+          done
+          # Retrouve le settings.gradle, en ignorant les dossiers de build.
+          SETTINGS="$(find . -name settings.gradle | grep -v '/build/' | head -n1 || true)"
+          if [ -z "$SETTINGS" ]; then
+            SETTINGS="$(find . -name settings.gradle.kts | grep -v '/build/' | head -n1 || true)"
+          fi
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::Aucun settings.gradle trouvÃ© : projet Gradle introuvable."
+            exit 1
+          fi
+          PROJDIR="$(cd "$(dirname "$SETTINGS")" && pwd)"
+          echo "Projet dÃ©tectÃ© : $PROJDIR"
+          echo "projdir=$PROJDIR" >> "$GITHUB_OUTPUT"
+
+      - name: RÃ©cupÃ©rer model-viewer (APK autonome)
+        working-directory: ${{ steps.locate.outputs.projdir }}
+        run: |
+          if [ -f scripts/fetch-deps.sh ]; then
+            bash scripts/fetch-deps.sh
+          else
+            echo "Pas de scripts/fetch-deps.sh : le CDN servira model-viewer."
+          fi
+
+      - name: S'assurer du wrapper Gradle (8.7)
+        working-directory: ${{ steps.locate.outputs.projdir }}
+        run: |
+          chmod +x gradlew || true
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "gradle-wrapper.jar absent â†’ rÃ©gÃ©nÃ©ration avec le Gradle prÃ©installÃ© du runner."
+            if ! command -v gradle >/dev/null 2>&1; then
+              echo "::error::Gradle introuvable sur le runner et wrapper absent."
+              exit 1
+            fi
+            gradle wrapper --gradle-version 8.7 --distribution-type bin
+            chmod +x gradlew
+          fi
+
+      - name: Compiler l'APK (debug)
+        working-directory: ${{ steps.locate.outputs.projdir }}
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Localiser l'APK produit
+        id: apk
+        working-directory: ${{ steps.locate.outputs.projdir }}
+        run: |
+          APK="$(find app/build/outputs/apk/debug -name '*.apk' | head -n1 || true)"
+          if [ -z "$APK" ]; then
+            echo "::error::APK introuvable aprÃ¨s le build."
+            exit 1
+          fi
+          echo "APK : $APK"
+          echo "path=${{ steps.locate.outputs.projdir }}/$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Publier l'APK en artÃ©fact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tamagauchiste-debug-apk
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+
+      - name: Joindre l'APK Ã  la release (sur un tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.apk.outputs.path }}
