@@ -1,4 +1,4 @@
-name: Construire l'APK Tamagauchiste
+name: Construire l'APK Compagnon 3D
 
 # Se dÃ©clenche Ã  chaque push, et peut Ãªtre lancÃ© Ã  la main depuis l'onglet Actions.
 on:
@@ -101,7 +101,7 @@ jobs:
       - name: Publier l'APK en artÃ©fact
         uses: actions/upload-artifact@v4
         with:
-          name: Tamagauchiste-debug-apk
+          name: Compagnon3D-debug-apk
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
 
